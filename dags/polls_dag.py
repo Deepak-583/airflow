@@ -54,6 +54,8 @@ def poll_kafka_task(**context) -> str:
     return filepath
 
 
+
+
 # DAG Definition
 with DAG(
     dag_id="polls_dag",
@@ -78,7 +80,7 @@ with DAG(
         trigger_dag_id="clean_dag",
         conf={"raw_file": "{{ ti.xcom_pull(task_ids='poll_kafka') }}"},
         wait_for_completion=False,
-        trigger_rule="none_failed_min_one_success",  # Only trigger if poll_kafka succeeded and returned a value
+        trigger_rule="all_success",  # Trigger if poll_kafka succeeded
     )
     
     poll_task >> trigger_clean
