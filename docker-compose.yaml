@@ -28,7 +28,8 @@
 # AIRFLOW_UID                  - User ID in Airflow containers
 #                                Default: 50000
 # AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
-#                                Default: .
+#                                Default: /home/deepakbablu667/airflow
+#                                Set this in .env file or export before running docker-compose
 # Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
 #
 # _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
@@ -78,12 +79,12 @@ x-airflow-common:
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
-    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
-    - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
-    - ${AIRFLOW_PROJ_DIR:-.}/scripts:/opt/airflow/scripts
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/data:/opt/airflow/data
+    - ${AIRFLOW_PROJ_DIR:-/home/deepakbablu667/airflow}/scripts:/opt/airflow/scripts
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
