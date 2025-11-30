@@ -8,8 +8,8 @@ This DAG:
 4. Triggers commit_dag to load data to Snowflake
 """
 from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 # Removed unused import
 
 from datetime import datetime

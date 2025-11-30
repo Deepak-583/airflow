@@ -8,7 +8,7 @@ This DAG:
 3. Loads data into Snowflake BENE table using COPY INTO command
 """
 from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
 from datetime import datetime

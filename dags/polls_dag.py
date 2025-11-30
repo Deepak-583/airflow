@@ -7,8 +7,8 @@ This DAG:
 3. Triggers clean_dag to process the data
 """
 from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from datetime import datetime
 import uuid
@@ -81,6 +81,7 @@ with DAG(
         conf={"raw_file": "{{ ti.xcom_pull(task_ids='poll_kafka') }}"},
         wait_for_completion=False,
         trigger_rule="all_success",  # Trigger if poll_kafka succeeded
+        reset_dag_run=False,
     )
     
     poll_task >> trigger_clean
