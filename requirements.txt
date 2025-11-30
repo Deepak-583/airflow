@@ -1,0 +1,6 @@
+apache-airflow-providers-apache-kafka
+kafka-python
+confluent-kafka
+apache-airflow-providers-snowflake
+snowflake-connector-python
+python-dotenv
