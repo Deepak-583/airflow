@@ -124,6 +124,14 @@ def consume_kafka_messages(
             except Exception as e:
                 logger.warning(f"Error decoding message: {e}")
                 continue
+        
+        # Commit offsets after consuming messages to avoid reprocessing
+        if messages:
+            try:
+                consumer.commit(asynchronous=False)
+                logger.info(f"Committed offsets for {len(messages)} messages")
+            except Exception as e:
+                logger.warning(f"Failed to commit offsets: {e}")
     
     finally:
         consumer.close()

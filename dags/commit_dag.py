@@ -66,16 +66,14 @@ def load_to_snowflake_task(**context) -> None:
         if cleaned_file:
             task_logger.info(f"Cleaned file from XCom: {cleaned_file}")
     
-    # Try 3: Latest file in cleaned directory (fallback)
-    if not cleaned_file:
-        cleaned_file = get_latest_file(CLEAN_DIR, ".csv")
-        if cleaned_file:
-            task_logger.info(f"Using latest cleaned file: {cleaned_file}")
+    # Removed fallback to latest file to prevent reprocessing old data
+    # Only process files explicitly passed from clean_dag
     
     # Validate file exists
     if not cleaned_file or not Path(cleaned_file).exists():
         raise FileNotFoundError(
-            f"Cleaned file not found. Checked dag_run.conf, XCom, and {CLEAN_DIR}"
+            f"Cleaned file not found. This DAG should only be triggered by clean_dag. "
+            f"Checked dag_run.conf and XCom. File: {cleaned_file}"
         )
     
     # Read CSV
@@ -197,15 +195,43 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.info(f"Uploading file to stage: {SNOWFLAKE_STAGE}")
         cursor.execute(put_sql)
         
-        # Copy data into target table
+        # Create temporary staging table for deduplication
+        staging_table = f"{SNOWFLAKE_TABLE}_STAGING_{int(datetime.now().timestamp())}"
+        create_staging_sql = f"""
+            CREATE TEMPORARY TABLE {staging_table} LIKE {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE};
+        """
+        task_logger.info(f"Creating staging table: {staging_table}")
+        cursor.execute(create_staging_sql)
+        
+        # Copy data into staging table first
         copy_sql = f"""
-            COPY INTO {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE}
+            COPY INTO {staging_table}
             FROM @{SNOWFLAKE_STAGE}
             FILE_FORMAT = (TYPE='CSV' SKIP_HEADER=1 FIELD_OPTIONALLY_ENCLOSED_BY='"')
             ON_ERROR = 'CONTINUE';
         """
-        task_logger.info(f"Copying data to {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE}")
+        task_logger.info(f"Copying data to staging table: {staging_table}")
         cursor.execute(copy_sql)
+        
+        # Merge staging data into target table with deduplication
+        # Deduplicate based on USER_ID, ENTITY_ID, and OCCURRED_AT combination
+        merge_sql = f"""
+            MERGE INTO {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} AS target
+            USING {staging_table} AS source
+            ON target.USER_ID = source.USER_ID 
+               AND target.ENTITY_ID = source.ENTITY_ID 
+               AND target.OCCURRED_AT = source.OCCURRED_AT
+            WHEN NOT MATCHED THEN
+                INSERT (USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT)
+                VALUES (source.USER_ID, source.EVENT_TYPE, source.DESCRIPTION, source.ENTITY_TYPE, 
+                        source.ENTITY_ID, source.SESSION_ID, source.PROPS, source.OCCURRED_AT);
+        """
+        task_logger.info(f"Merging data into {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} (deduplicating)")
+        cursor.execute(merge_sql)
+        
+        # Get number of rows inserted
+        rows_inserted = cursor.rowcount
+        task_logger.info(f"Inserted {rows_inserted} new rows (duplicates skipped)")
         
         # Commit transaction
         conn.commit()

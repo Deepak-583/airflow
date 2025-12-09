@@ -7,7 +7,7 @@ This DAG:
 3. Triggers clean_dag to process the data
 """
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from datetime import datetime
@@ -80,8 +80,23 @@ with DAG(
         trigger_dag_id="clean_dag",
         conf={"raw_file": "{{ ti.xcom_pull(task_ids='poll_kafka') }}"},
         wait_for_completion=False,
-        trigger_rule="all_success",  # Trigger if poll_kafka succeeded
+        trigger_rule="all_done",  # Trigger even if no messages (but clean_dag will handle None)
         reset_dag_run=False,
     )
     
-    poll_task >> trigger_clean
+    # Only trigger clean_dag if we got messages
+    def check_messages(**context):
+        """Only proceed if messages were received"""
+        ti = context['ti']
+        raw_file = ti.xcom_pull(task_ids='poll_kafka')
+        if raw_file and raw_file != "None":
+            return True
+        logger.info("No messages received from Kafka, skipping downstream processing")
+        return False
+    
+    check_messages_task = ShortCircuitOperator(
+        task_id="check_messages",
+        python_callable=check_messages,
+    )
+    
+    poll_task >> check_messages_task >> trigger_clean
