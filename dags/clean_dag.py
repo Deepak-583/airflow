@@ -100,6 +100,11 @@ def clean_data_task(**context) -> str:
     df = pd.DataFrame(cleaned_records)
     df = normalize_dataframe_columns(df)
     
+    # Remove request column if it exists
+    if 'request' in df.columns:
+        df = df.drop(columns=['request'])
+        task_logger.info("Removed request column from DataFrame")
+    
     task_logger.info(f"DataFrame shape: {df.shape[0]} rows, {df.shape[1]} columns")
     
     # Save cleaned CSV

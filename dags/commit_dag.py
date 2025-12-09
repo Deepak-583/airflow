@@ -4,7 +4,7 @@ DAG for loading cleaned data to Snowflake BENE table.
 This DAG:
 1. Reads cleaned CSV files from /opt/airflow/data/cleaned
 2. Maps and transforms data to match BENE table schema:
-   - USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, REQUEST, OCCURRED_AT
+   - USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT
 3. Loads data into Snowflake BENE table using COPY INTO command
 """
 from airflow import DAG
@@ -85,7 +85,7 @@ def load_to_snowflake_task(**context) -> None:
     task_logger.info(f"Columns in CSV: {list(df.columns)}")
     
     # Prepare DataFrame to match BENE table schema
-    # Required columns in order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, REQUEST, OCCURRED_AT
+    # Required columns in order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT
     
     # Create new DataFrame with required columns
     bene_df = pd.DataFrame()
@@ -156,26 +156,6 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.warning("props column not found, setting to empty JSON")
         bene_df['PROPS'] = '{}'
     
-    # REQUEST - Convert dict to JSON string for VARIANT type (new field)
-    if 'request' in df.columns:
-        def request_to_json(x):
-            if pd.isna(x) or x is None:
-                return '{}'
-            if isinstance(x, dict):
-                return json.dumps(x)
-            if isinstance(x, str):
-                try:
-                    parsed = json.loads(x) if x.startswith('{') else ast.literal_eval(x)
-                    return json.dumps(parsed) if isinstance(parsed, dict) else '{}'
-                except:
-                    return '{}'
-            return '{}'
-        
-        bene_df['REQUEST'] = df['request'].apply(request_to_json)
-    else:
-        task_logger.info("request column not found, setting to empty JSON")
-        bene_df['REQUEST'] = '{}'
-    
     # OCCURRED_AT - Map from timestamp column
     if 'timestamp' in df.columns:
         bene_df['OCCURRED_AT'] = pd.to_datetime(df['timestamp'], errors='coerce')
@@ -187,7 +167,7 @@ def load_to_snowflake_task(**context) -> None:
     
     # Ensure column order matches table schema
     column_order = ['USER_ID', 'EVENT_TYPE', 'DESCRIPTION', 'ENTITY_TYPE', 'ENTITY_ID', 
-                     'SESSION_ID', 'PROPS', 'REQUEST', 'OCCURRED_AT']
+                     'SESSION_ID', 'PROPS', 'OCCURRED_AT']
     bene_df = bene_df[column_order]
     
     task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
