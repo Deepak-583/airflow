@@ -70,7 +70,11 @@ def consume_kafka_messages(
     max_messages: Optional[int] = None
 ) -> List[str]:
     """
-    Consume messages from Kafka topic.
+    Consume NEW messages from Kafka topic (only messages that arrived since last poll).
+    This function ensures that:
+    1. Only new messages are read (not past data)
+    2. Offsets are properly committed to avoid reprocessing
+    3. If no new messages, returns empty list
     
     Args:
         topic: Kafka topic name
@@ -78,12 +82,22 @@ def consume_kafka_messages(
         max_messages: Maximum number of messages to consume (None for unlimited)
         
     Returns:
-        List of message values as strings
+        List of message values as strings (only new messages)
     """
-    logger.info(f"Connecting to Kafka topic: {topic}")
+    logger.info(f"Connecting to Kafka topic: {topic} to check for NEW messages only")
     
     # Read Kafka configuration
     kafka_config = read_kafka_config()
+    
+    # Ensure auto-commit is disabled for manual control
+    if kafka_config.get("enable.auto.commit", "false").lower() == "true":
+        logger.warning("Auto-commit is enabled. Disabling for manual offset control.")
+        kafka_config["enable.auto.commit"] = "false"
+    
+    # Ensure we only read new messages (latest offset)
+    if kafka_config.get("auto.offset.reset", "latest").lower() != "latest":
+        logger.warning("auto.offset.reset is not 'latest'. Setting to 'latest' to only read new messages.")
+        kafka_config["auto.offset.reset"] = "latest"
     
     # Create consumer
     consumer = Consumer(kafka_config)
@@ -92,9 +106,21 @@ def consume_kafka_messages(
     messages = []
     start_time = datetime.now()
     
-    logger.info(f"Polling Kafka for up to {poll_timeout} seconds...")
+    logger.info(f"Polling Kafka for NEW messages (up to {poll_timeout} seconds)...")
+    logger.info("Note: Only messages that arrived after consumer start will be read (no past data)")
     
     try:
+        # Wait for partition assignment (required for offset management)
+        assignment_wait_time = 5  # seconds
+        assignment_start = datetime.now()
+        while (datetime.now() - assignment_start).total_seconds() < assignment_wait_time:
+            partitions = consumer.assignment()
+            if partitions:
+                logger.info(f"Assigned to partitions: {[p.partition for p in partitions]}")
+                break
+            consumer.poll(timeout=0.1)
+        
+        # Poll for new messages
         while (datetime.now() - start_time).total_seconds() < poll_timeout:
             # Check if we've reached max messages
             if max_messages and len(messages) >= max_messages:
@@ -104,38 +130,44 @@ def consume_kafka_messages(
             msg = consumer.poll(timeout=1.0)
             
             if msg is None:
+                # No message available, continue polling until timeout
                 continue
             
             # Handle errors
             if msg.error():
                 error_code = msg.error().code()
                 if error_code == KafkaError._PARTITION_EOF:
-                    # End of partition, continue polling
-                    continue
+                    # End of partition reached - no more messages available
+                    logger.debug("Reached end of partition (no more messages)")
+                    break
                 else:
                     logger.warning(f"Kafka error: {msg.error()}")
                     continue
             
-            # Decode message
+            # Decode message (this is a NEW message)
             try:
                 message_value = msg.value().decode("utf-8")
                 messages.append(message_value)
-                logger.debug(f"Received message #{len(messages)}")
+                logger.debug(f"Received NEW message #{len(messages)} from partition {msg.partition()}, offset {msg.offset()}")
             except Exception as e:
                 logger.warning(f"Error decoding message: {e}")
                 continue
         
-        # Commit offsets after consuming messages to avoid reprocessing
+        # Commit offsets ONLY after successfully consuming messages
+        # This ensures we don't reprocess the same messages
         if messages:
             try:
                 consumer.commit(asynchronous=False)
-                logger.info(f"Committed offsets for {len(messages)} messages")
+                logger.info(f"Successfully committed offsets for {len(messages)} new messages")
             except Exception as e:
-                logger.warning(f"Failed to commit offsets: {e}")
+                logger.error(f"Failed to commit offsets: {e}. Messages may be reprocessed!")
+                raise
+        else:
+            logger.info("No new messages received from Kafka")
     
     finally:
         consumer.close()
-        logger.info(f"Total messages received: {len(messages)}")
+        logger.info(f"Total NEW messages received: {len(messages)}")
     
     return messages
 

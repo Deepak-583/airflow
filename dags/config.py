@@ -45,8 +45,8 @@ KAFKA_CLIENT_ID = os.getenv("KAFKA_CLIENT_ID", "")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "event")
 KAFKA_POLL_TIMEOUT = int(os.getenv("KAFKA_POLL_TIMEOUT", "10"))  # seconds
 KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "airflow-consumer-group")
-KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "earliest")
-KAFKA_ENABLE_AUTO_COMMIT = os.getenv("KAFKA_ENABLE_AUTO_COMMIT", "true")
+KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")  # Changed to 'latest' to only read new messages
+KAFKA_ENABLE_AUTO_COMMIT = os.getenv("KAFKA_ENABLE_AUTO_COMMIT", "false")  # Disable auto-commit, we'll commit manually
 
 # Snowflake Configuration
 SNOWFLAKE_CONN_ID = os.getenv("SNOWFLAKE_CONN_ID", "snowflake_conn")
