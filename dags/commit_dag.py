@@ -4,7 +4,8 @@ DAG for loading cleaned data to Snowflake BENE table.
 This DAG:
 1. Reads cleaned CSV files from /opt/airflow/data/cleaned
 2. Maps and transforms data to match BENE table schema:
-   - USER_ID, USERNAME, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT (9 columns)
+   - USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME (9 columns)
+   - Note: USERNAME is in the last position to match Snowflake table schema
 3. Loads data into Snowflake BENE table using COPY INTO command
 """
 from airflow import DAG
@@ -83,7 +84,8 @@ def load_to_snowflake_task(**context) -> None:
     task_logger.info(f"Columns in CSV: {list(df.columns)}")
     
     # Prepare DataFrame to match BENE table schema
-    # Required columns in order: USER_ID, USERNAME, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT (9 columns)
+    # Required columns in order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME (9 columns)
+    # Note: USERNAME is in the last position to match Snowflake table schema
     
     # Create new DataFrame with required columns
     bene_df = pd.DataFrame()
@@ -97,13 +99,6 @@ def load_to_snowflake_task(**context) -> None:
     else:
         task_logger.warning("user_id column not found, setting to None")
         bene_df['USER_ID'] = None
-    
-    # USERNAME - String datatype
-    if 'username' in df.columns:
-        bene_df['USERNAME'] = df['username'].astype(str)
-    else:
-        task_logger.info("username column not found, setting to None")
-        bene_df['USERNAME'] = None
     
     # EVENT_TYPE
     if 'event_type' in df.columns:
@@ -170,9 +165,17 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.warning("timestamp/occurred_at column not found, setting to None")
         bene_df['OCCURRED_AT'] = None
     
-    # Ensure column order matches table schema (9 columns)
-    column_order = ['USER_ID', 'USERNAME', 'EVENT_TYPE', 'DESCRIPTION', 'ENTITY_TYPE', 'ENTITY_ID', 
-                     'SESSION_ID', 'PROPS', 'OCCURRED_AT']
+    # USERNAME - String datatype (last position to match Snowflake table schema)
+    if 'username' in df.columns:
+        bene_df['USERNAME'] = df['username'].astype(str)
+    else:
+        task_logger.info("username column not found, setting to None")
+        bene_df['USERNAME'] = None
+    
+    # Ensure column order matches Snowflake table schema (9 columns)
+    # Order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME
+    column_order = ['USER_ID', 'EVENT_TYPE', 'DESCRIPTION', 'ENTITY_TYPE', 'ENTITY_ID', 
+                     'SESSION_ID', 'PROPS', 'OCCURRED_AT', 'USERNAME']
     bene_df = bene_df[column_order]
     
     task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
@@ -233,9 +236,9 @@ def load_to_snowflake_task(**context) -> None:
                AND target.ENTITY_ID = source.ENTITY_ID 
                AND target.OCCURRED_AT = source.OCCURRED_AT
             WHEN NOT MATCHED THEN
-                INSERT (USER_ID, USERNAME, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT)
-                VALUES (source.USER_ID, source.USERNAME, source.EVENT_TYPE, source.DESCRIPTION, source.ENTITY_TYPE, 
-                        source.ENTITY_ID, source.SESSION_ID, source.PROPS, source.OCCURRED_AT);
+                INSERT (USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME)
+                VALUES (source.USER_ID, source.EVENT_TYPE, source.DESCRIPTION, source.ENTITY_TYPE, 
+                        source.ENTITY_ID, source.SESSION_ID, source.PROPS, source.OCCURRED_AT, source.USERNAME);
         """
         task_logger.info(f"Merging data into {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} (deduplicating)")
         cursor.execute(merge_sql)

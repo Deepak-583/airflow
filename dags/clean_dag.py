@@ -105,12 +105,11 @@ def clean_data_task(**context) -> str:
         df = df.drop(columns=['request'])
         task_logger.info("Removed request column from DataFrame")
     
-    # Ensure consistent column order to match commit_dag expectations
-    # Expected order: user_id, username, event_type, description, entity_type, entity_id, session_id, props, occurred_at/timestamp
+    # Ensure consistent column order to match Snowflake table schema
+    # Snowflake table order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME
     preferred_column_order = [
-        'user_id', 'username', 'event_type', 'description', 
-        'entity_type', 'entity_id', 'session_id', 'props', 
-        'occurred_at', 'timestamp'
+        'user_id', 'event_type', 'description', 'entity_type', 
+        'entity_id', 'session_id', 'props', 'occurred_at', 'timestamp', 'username'
     ]
     
     # Get columns that exist in the DataFrame
