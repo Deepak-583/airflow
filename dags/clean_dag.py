@@ -105,9 +105,26 @@ def clean_data_task(**context) -> str:
         df = df.drop(columns=['request'])
         task_logger.info("Removed request column from DataFrame")
     
-    task_logger.info(f"DataFrame shape: {df.shape[0]} rows, {df.shape[1]} columns")
+    # Ensure consistent column order to match commit_dag expectations
+    # Expected order: user_id, username, event_type, description, entity_type, entity_id, session_id, props, occurred_at/timestamp
+    preferred_column_order = [
+        'user_id', 'username', 'event_type', 'description', 
+        'entity_type', 'entity_id', 'session_id', 'props', 
+        'occurred_at', 'timestamp'
+    ]
     
-    # Save cleaned CSV
+    # Get columns that exist in the DataFrame
+    existing_columns = [col for col in preferred_column_order if col in df.columns]
+    # Add any remaining columns that weren't in the preferred order
+    remaining_columns = [col for col in df.columns if col not in preferred_column_order]
+    
+    # Reorder DataFrame columns
+    df = df[existing_columns + remaining_columns]
+    
+    task_logger.info(f"DataFrame shape: {df.shape[0]} rows, {df.shape[1]} columns")
+    task_logger.info(f"DataFrame columns (ordered): {list(df.columns)}")
+    
+    # Save cleaned CSV with consistent column order
     filename = f"{uuid.uuid4()}.csv"
     cleaned_filepath = str(CLEAN_DIR / filename)
     df.to_csv(cleaned_filepath, index=False)

@@ -211,6 +211,8 @@ def load_to_snowflake_task(**context) -> None:
         cursor.execute(create_staging_sql)
         
         # Copy data into staging table first
+        # Note: COPY INTO maps by position, so CSV column order must match table column order
+        # We ensure the CSV has columns in the correct order before uploading
         copy_sql = f"""
             COPY INTO {staging_table}
             FROM @{SNOWFLAKE_STAGE}
@@ -218,6 +220,8 @@ def load_to_snowflake_task(**context) -> None:
             ON_ERROR = 'CONTINUE';
         """
         task_logger.info(f"Copying data to staging table: {staging_table}")
+        task_logger.info(f"CSV column order: {list(bene_df.columns)}")
+        task_logger.info("Note: COPY INTO maps by position, so CSV order must match table schema order")
         cursor.execute(copy_sql)
         
         # Merge staging data into target table with deduplication
