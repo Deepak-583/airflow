@@ -9,7 +9,7 @@ This DAG:
 """
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 # Removed unused import
 
 from datetime import datetime

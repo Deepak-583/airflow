@@ -14,8 +14,9 @@ Behavior:
 - If no new data, returns without triggering downstream DAGs
 """
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import ShortCircuitOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 from datetime import datetime
 import uuid
@@ -110,8 +111,8 @@ with DAG(
         task_logger = logging.getLogger("airflow.task")
         ti = context['ti']
         
-        # Pull XCom value from poll_kafka task
-        raw_file = ti.xcom_pull(task_ids='poll_kafka', key=None)
+        # Pull XCom value from poll_kafka task (return value, not a specific key)
+        raw_file = ti.xcom_pull(task_ids='poll_kafka')
         
         # Log the raw XCom value for debugging
         task_logger.info(f"XCom value from poll_kafka: {raw_file} (type: {type(raw_file)})")
