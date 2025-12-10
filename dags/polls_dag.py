@@ -103,15 +103,44 @@ with DAG(
         """
         Only proceed if NEW messages were received.
         This ensures we don't trigger downstream DAGs when there's no new data.
+        
+        Returns:
+            True if new messages were received (filepath exists), False otherwise
         """
+        task_logger = logging.getLogger("airflow.task")
         ti = context['ti']
-        raw_file = ti.xcom_pull(task_ids='poll_kafka')
-        if raw_file and raw_file != "None":
-            logger.info(f"New messages received. Proceeding to trigger clean_dag with file: {raw_file}")
-            return True
-        logger.info("No NEW messages received from Kafka. Skipping downstream processing (clean_dag will not be triggered).")
-        logger.info("This is expected behavior - will check again in next scheduled run.")
-        return False
+        
+        # Pull XCom value from poll_kafka task
+        raw_file = ti.xcom_pull(task_ids='poll_kafka', key=None)
+        
+        # Log the raw XCom value for debugging
+        task_logger.info(f"XCom value from poll_kafka: {raw_file} (type: {type(raw_file)})")
+        
+        # Check if we have a valid filepath
+        # Must be: not None, not empty string, not the string "None"
+        if raw_file is None:
+            task_logger.info("No NEW messages received from Kafka (XCom is None). Skipping downstream processing.")
+            task_logger.info("This is expected behavior - will check again in next scheduled run.")
+            return False
+        
+        # Convert to string and check
+        raw_file_str = str(raw_file).strip()
+        
+        if not raw_file_str or raw_file_str.lower() == "none" or raw_file_str == "":
+            task_logger.info(f"No NEW messages received from Kafka (XCom value: '{raw_file_str}'). Skipping downstream processing.")
+            task_logger.info("This is expected behavior - will check again in next scheduled run.")
+            return False
+        
+        # Verify the file actually exists
+        from pathlib import Path
+        if not Path(raw_file_str).exists():
+            task_logger.warning(f"File path from XCom does not exist: {raw_file_str}. Skipping downstream processing.")
+            return False
+        
+        # We have a valid filepath - proceed to trigger clean_dag
+        task_logger.info(f"✓ NEW messages received! File: {raw_file_str}")
+        task_logger.info(f"Proceeding to trigger clean_dag with file: {raw_file_str}")
+        return True
     
     check_messages_task = ShortCircuitOperator(
         task_id="check_messages",
