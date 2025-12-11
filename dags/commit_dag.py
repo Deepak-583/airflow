@@ -135,23 +135,51 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.warning("session_id column not found, setting to None")
         bene_df['SESSION_ID'] = None
     
-    # PROPS - Convert dict to JSON string for VARIANT type
+    # PROPS - Convert to JSON string for VARIANT type
+    # Note: props should already be JSON string from clean_dag CSV
     if 'props' in df.columns:
         def props_to_json(x):
+            """Convert props to valid JSON string for Snowflake VARIANT type"""
             if pd.isna(x) or x is None:
                 return '{}'
-            if isinstance(x, dict):
-                return json.dumps(x)
             if isinstance(x, str):
-                # Already a string, try to parse and re-serialize
+                # Should already be JSON string from clean_dag
+                x_str = str(x).strip()
+                if not x_str or x_str == '' or x_str.lower() == 'nan':
+                    return '{}'
+                # Validate it's valid JSON
                 try:
-                    parsed = json.loads(x) if x.startswith('{') else ast.literal_eval(x)
-                    return json.dumps(parsed) if isinstance(parsed, dict) else '{}'
-                except:
+                    parsed = json.loads(x_str)
+                    # Re-serialize to ensure it's properly formatted
+                    return json.dumps(parsed)
+                except json.JSONDecodeError:
+                    # Try parsing as Python literal as fallback
+                    try:
+                        parsed = ast.literal_eval(x_str)
+                        if isinstance(parsed, (dict, list)):
+                            return json.dumps(parsed)
+                        else:
+                            task_logger.warning(f"Props parsed to non-dict/list type: {type(parsed)}")
+                            return '{}'
+                    except (ValueError, SyntaxError) as e:
+                        task_logger.warning(f"Failed to parse props: {x_str[:100]}, error: {e}")
+                        return '{}'
+            if isinstance(x, dict) or isinstance(x, list):
+                # If somehow still a dict/list, convert to JSON
+                try:
+                    return json.dumps(x)
+                except (TypeError, ValueError) as e:
+                    task_logger.warning(f"Failed to serialize props dict/list: {e}")
                     return '{}'
             return '{}'
         
         bene_df['PROPS'] = df['props'].apply(props_to_json)
+        
+        # Log sample of props data for debugging
+        sample_props = bene_df['PROPS'].head(3).tolist()
+        task_logger.info(f"Sample PROPS values (first 3): {sample_props}")
+        non_empty_props = bene_df[bene_df['PROPS'] != '{}']['PROPS'].count()
+        task_logger.info(f"PROPS column: {non_empty_props} non-empty values out of {len(bene_df)} total rows")
     else:
         task_logger.warning("props column not found, setting to empty JSON")
         bene_df['PROPS'] = '{}'

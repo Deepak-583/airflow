@@ -105,6 +105,40 @@ def clean_data_task(**context) -> str:
         df = df.drop(columns=['request'])
         task_logger.info("Removed request column from DataFrame")
     
+    # Convert props dict to JSON string before saving to CSV
+    # This ensures props are stored as valid JSON that can be parsed correctly later
+    if 'props' in df.columns:
+        import json
+        def props_to_json_string(x):
+            """Convert props dict/list to JSON string for CSV storage"""
+            if pd.isna(x) or x is None:
+                return '{}'
+            if isinstance(x, dict) or isinstance(x, list):
+                try:
+                    return json.dumps(x)
+                except (TypeError, ValueError) as e:
+                    task_logger.warning(f"Failed to serialize props to JSON: {e}, using empty dict")
+                    return '{}'
+            if isinstance(x, str):
+                # Already a string, validate it's valid JSON
+                try:
+                    # Try to parse and re-serialize to ensure it's valid JSON
+                    parsed = json.loads(x)
+                    return json.dumps(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    # If not valid JSON, try to parse as Python literal
+                    try:
+                        import ast
+                        parsed = ast.literal_eval(x)
+                        return json.dumps(parsed) if isinstance(parsed, (dict, list)) else '{}'
+                    except (ValueError, SyntaxError):
+                        task_logger.warning(f"Props string is not valid JSON or Python literal: {x[:50]}")
+                        return '{}'
+            return '{}'
+        
+        df['props'] = df['props'].apply(props_to_json_string)
+        task_logger.info("Converted props dict to JSON string for CSV storage")
+    
     # Ensure consistent column order to match Snowflake table schema
     # Snowflake table order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME
     preferred_column_order = [
