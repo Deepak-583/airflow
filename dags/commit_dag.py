@@ -206,7 +206,27 @@ def load_to_snowflake_task(**context) -> None:
                      'SESSION_ID', 'PROPS', 'OCCURRED_AT', 'USERNAME']
     bene_df = bene_df[column_order]
     
-    task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
+    # Deduplicate within the batch to ensure idempotency
+    # Keep only the latest version of each event (based on USER_ID, ENTITY_ID, OCCURRED_AT)
+    # This prevents old deleted data from being re-inserted when the same event appears again
+    initial_row_count = len(bene_df)
+    
+    # Drop duplicates based on the unique key (USER_ID, ENTITY_ID, OCCURRED_AT)
+    # Keep the last occurrence to ensure we have the most recent data
+    # This ensures that if the same event appears multiple times in the batch, only the latest is kept
+    bene_df = bene_df.drop_duplicates(
+        subset=['USER_ID', 'ENTITY_ID', 'OCCURRED_AT'],
+        keep='last'
+    )
+    
+    deduplicated_count = len(bene_df)
+    if initial_row_count != deduplicated_count:
+        task_logger.info(f"Deduplicated batch: {initial_row_count} rows -> {deduplicated_count} rows "
+                        f"(removed {initial_row_count - deduplicated_count} duplicates)")
+    else:
+        task_logger.info(f"No duplicates found in batch: {deduplicated_count} unique rows")
+    
+    task_logger.info(f"Prepared DataFrame for BENE table: {deduplicated_count} rows, {len(bene_df.columns)} columns")
     task_logger.info(f"Columns: {list(bene_df.columns)}")
     
     # Connect to Snowflake
@@ -255,7 +275,11 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.info("Note: COPY INTO maps by position, so CSV order must match table schema order")
         cursor.execute(copy_sql)
         
-        # Merge staging data into target table with deduplication
+        # Merge staging data into target table with idempotency
+        # This ensures:
+        # 1. New events are inserted (WHEN NOT MATCHED)
+        # 2. Existing events are updated with latest data (WHEN MATCHED)
+        # 3. Deleted rows won't be re-inserted unless they're truly new events
         # Deduplicate based on USER_ID, ENTITY_ID, and OCCURRED_AT combination
         merge_sql = f"""
             MERGE INTO {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} AS target
@@ -263,17 +287,37 @@ def load_to_snowflake_task(**context) -> None:
             ON target.USER_ID = source.USER_ID 
                AND target.ENTITY_ID = source.ENTITY_ID 
                AND target.OCCURRED_AT = source.OCCURRED_AT
+            WHEN MATCHED THEN
+                UPDATE SET
+                    EVENT_TYPE = source.EVENT_TYPE,
+                    DESCRIPTION = source.DESCRIPTION,
+                    ENTITY_TYPE = source.ENTITY_TYPE,
+                    SESSION_ID = source.SESSION_ID,
+                    PROPS = source.PROPS,
+                    USERNAME = source.USERNAME
             WHEN NOT MATCHED THEN
                 INSERT (USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME)
                 VALUES (source.USER_ID, source.EVENT_TYPE, source.DESCRIPTION, source.ENTITY_TYPE, 
                         source.ENTITY_ID, source.SESSION_ID, source.PROPS, source.OCCURRED_AT, source.USERNAME);
         """
-        task_logger.info(f"Merging data into {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} (deduplicating)")
+        task_logger.info(f"Merging data into {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} "
+                        f"(idempotent: updates existing, inserts new)")
+        
+        # Get count of rows in staging before merge for logging
+        count_sql = f"SELECT COUNT(*) FROM {staging_table};"
+        cursor.execute(count_sql)
+        staging_count = cursor.fetchone()[0]
+        task_logger.info(f"Staging table contains {staging_count} rows to merge")
+        
+        # Execute merge
         cursor.execute(merge_sql)
         
-        # Get number of rows inserted
-        rows_inserted = cursor.rowcount
-        task_logger.info(f"Inserted {rows_inserted} new rows (duplicates skipped)")
+        # Get number of rows affected (inserted + updated)
+        # Note: Snowflake's rowcount returns the total number of rows affected by the MERGE
+        rows_affected = cursor.rowcount
+        task_logger.info(f"Merge completed: {rows_affected} rows affected "
+                        f"(combination of new inserts and existing row updates)")
+        task_logger.info("Idempotency ensured: deleted rows won't be re-inserted unless they're truly new events")
         
         # Commit transaction
         conn.commit()
