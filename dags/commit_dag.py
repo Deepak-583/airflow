@@ -12,7 +12,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import pandas as pd
 import tempfile
@@ -28,6 +28,7 @@ from config import (
     SNOWFLAKE_TABLE,
     SNOWFLAKE_STAGE,
     DEFAULT_START_DATE,
+    MAX_EVENT_AGE_DAYS,
 )
 from utils import (
     get_latest_file,
@@ -226,7 +227,46 @@ def load_to_snowflake_task(**context) -> None:
     else:
         task_logger.info(f"No duplicates found in batch: {deduplicated_count} unique rows")
     
-    task_logger.info(f"Prepared DataFrame for BENE table: {deduplicated_count} rows, {len(bene_df.columns)} columns")
+    # Filter out old/historical events to prevent re-inserting deleted data
+    # Only process events that are recent (within MAX_EVENT_AGE_DAYS)
+    # This prevents the website from re-inserting old historical data when new activity happens
+    # Example: On Dec 17, events from Dec 10 (7 days old) will be filtered out if MAX_EVENT_AGE_DAYS=1
+    cutoff_date = datetime.now() - timedelta(days=MAX_EVENT_AGE_DAYS)
+    before_filter_count = len(bene_df)
+    
+    # Filter out events older than cutoff_date
+    if 'OCCURRED_AT' in bene_df.columns:
+        # Convert OCCURRED_AT to datetime if it's not already
+        bene_df['OCCURRED_AT'] = pd.to_datetime(bene_df['OCCURRED_AT'], errors='coerce')
+        
+        # Log sample of event dates for debugging
+        if len(bene_df) > 0:
+            sample_dates = bene_df['OCCURRED_AT'].head(5).tolist()
+            oldest_event = bene_df['OCCURRED_AT'].min()
+            newest_event = bene_df['OCCURRED_AT'].max()
+            task_logger.info(f"Event date range: {oldest_event} to {newest_event}")
+            task_logger.info(f"Cutoff date (events older than this will be filtered): {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Filter to only recent events (events must be >= cutoff_date)
+        bene_df = bene_df[bene_df['OCCURRED_AT'] >= cutoff_date]
+        
+        filtered_count = len(bene_df)
+        old_events_filtered = before_filter_count - filtered_count
+        
+        if old_events_filtered > 0:
+            task_logger.warning(f"⚠️ FILTERED OUT {old_events_filtered} OLD/HISTORICAL EVENTS "
+                              f"(older than {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')})")
+            task_logger.warning(f"This prevents re-inserting deleted historical data. "
+                              f"Only processing {filtered_count} recent events (within last {MAX_EVENT_AGE_DAYS} day(s)).")
+            task_logger.warning(f"Current date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, "
+                              f"Cutoff: {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            task_logger.info(f"All {filtered_count} events are recent (within last {MAX_EVENT_AGE_DAYS} day(s))")
+    else:
+        task_logger.warning("OCCURRED_AT column not found, cannot filter old events. "
+                          "All events will be processed (this may cause old data to be re-inserted).")
+    
+    task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
     task_logger.info(f"Columns: {list(bene_df.columns)}")
     
     # Connect to Snowflake

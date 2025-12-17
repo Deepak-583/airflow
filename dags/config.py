@@ -67,3 +67,8 @@ SNOWFLAKE_INSECURE_MODE = os.getenv("SNOWFLAKE_INSECURE_MODE", "true").lower() =
 DEFAULT_START_DATE = os.getenv("DEFAULT_START_DATE", "2024-01-01")
 DEFAULT_TAGS = os.getenv("DEFAULT_TAGS", "etl,kafka,snowflake").split(",")
 
+# Data Filtering Configuration
+# Maximum age (in days) for events to be processed - prevents re-inserting old deleted data
+# Only process events from the last N days (default: 1 day to prevent week-old data from being re-inserted)
+MAX_EVENT_AGE_DAYS = int(os.getenv("MAX_EVENT_AGE_DAYS", "1"))  # Only process events from last 1 day
+
