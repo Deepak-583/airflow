@@ -92,9 +92,20 @@ def clean_data_task(**context) -> str:
     task_logger.info(f"Reading raw file: {raw_file}")
     raw_data = read_json_file(raw_file)
     
+    # Validate raw data is not empty
+    if not raw_data or (isinstance(raw_data, list) and len(raw_data) == 0):
+        error_msg = f"Raw file is empty or contains no data: {raw_file}"
+        task_logger.error(error_msg)
+        raise ValueError(error_msg)
+    
     # Clean data
     task_logger.info(f"Cleaning {len(raw_data)} records")
-    cleaned_records = clean_event_data(raw_data)
+    try:
+        cleaned_records = clean_event_data(raw_data)
+    except ValueError as e:
+        error_msg = f"Failed to clean data: {e}. No valid records found after cleaning."
+        task_logger.error(error_msg)
+        raise ValueError(error_msg) from e
     
     # Convert to DataFrame
     df = pd.DataFrame(cleaned_records)

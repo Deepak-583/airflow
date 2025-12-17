@@ -12,7 +12,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import pandas as pd
 import tempfile
@@ -84,12 +84,19 @@ def load_to_snowflake_task(**context) -> None:
     task_logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
     task_logger.info(f"Columns in CSV: {list(df.columns)}")
     
+    # Validate CSV is not empty
+    if len(df) == 0:
+        task_logger.warning("⚠️ Cleaned CSV file is empty. No data to process.")
+        task_logger.info("Skipping Snowflake load - no data to insert.")
+        return  # Exit early, no need to process empty data
+    
     # Prepare DataFrame to match BENE table schema
     # Required columns in order: USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME (9 columns)
     # Note: USERNAME is in the last position to match Snowflake table schema
     
     # Create new DataFrame with required columns
-    bene_df = pd.DataFrame()
+    # Initialize with same index as source DataFrame to maintain row alignment
+    bene_df = pd.DataFrame(index=df.index)
     
     # Map existing columns (case-insensitive matching)
     df.columns = df.columns.str.lower()
@@ -186,10 +193,11 @@ def load_to_snowflake_task(**context) -> None:
         bene_df['PROPS'] = '{}'
     
     # OCCURRED_AT - Map from timestamp column
+    # Use utc=True to ensure timezone-aware datetimes from the start (consistent with filtering logic)
     if 'timestamp' in df.columns:
-        bene_df['OCCURRED_AT'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        bene_df['OCCURRED_AT'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
     elif 'occurred_at' in df.columns:
-        bene_df['OCCURRED_AT'] = pd.to_datetime(df['occurred_at'], errors='coerce')
+        bene_df['OCCURRED_AT'] = pd.to_datetime(df['occurred_at'], errors='coerce', utc=True)
     else:
         task_logger.warning("timestamp/occurred_at column not found, setting to None")
         bene_df['OCCURRED_AT'] = None
@@ -231,13 +239,19 @@ def load_to_snowflake_task(**context) -> None:
     # Only process events that are recent (within MAX_EVENT_AGE_DAYS)
     # This prevents the website from re-inserting old historical data when new activity happens
     # Example: On Dec 17, events from Dec 10 (7 days old) will be filtered out if MAX_EVENT_AGE_DAYS=1
-    cutoff_date = datetime.now() - timedelta(days=MAX_EVENT_AGE_DAYS)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=MAX_EVENT_AGE_DAYS)
     before_filter_count = len(bene_df)
     
     # Filter out events older than cutoff_date
     if 'OCCURRED_AT' in bene_df.columns:
         # Convert OCCURRED_AT to datetime if it's not already
-        bene_df['OCCURRED_AT'] = pd.to_datetime(bene_df['OCCURRED_AT'], errors='coerce')
+        # Use utc=True to ensure timezone-aware datetimes for proper comparison
+        bene_df['OCCURRED_AT'] = pd.to_datetime(bene_df['OCCURRED_AT'], errors='coerce', utc=True)
+        
+        # Ensure cutoff_date is timezone-aware (UTC) to match OCCURRED_AT
+        # This prevents "Invalid comparison between dtype=datetime64[ns, UTC] and datetime" error
+        if cutoff_date.tzinfo is None:
+            cutoff_date = cutoff_date.replace(tzinfo=timezone.utc)
         
         # Log sample of event dates for debugging
         if len(bene_df) > 0:
@@ -245,10 +259,11 @@ def load_to_snowflake_task(**context) -> None:
             oldest_event = bene_df['OCCURRED_AT'].min()
             newest_event = bene_df['OCCURRED_AT'].max()
             task_logger.info(f"Event date range: {oldest_event} to {newest_event}")
-            task_logger.info(f"Cutoff date (events older than this will be filtered): {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            task_logger.info(f"Cutoff date (events older than this will be filtered): {cutoff_date}")
         
         # Filter to only recent events (events must be >= cutoff_date)
-        bene_df = bene_df[bene_df['OCCURRED_AT'] >= cutoff_date]
+        # Also filter out NaT (Not a Time) values that result from failed datetime parsing
+        bene_df = bene_df[(bene_df['OCCURRED_AT'] >= cutoff_date) & (bene_df['OCCURRED_AT'].notna())]
         
         filtered_count = len(bene_df)
         old_events_filtered = before_filter_count - filtered_count
@@ -258,13 +273,19 @@ def load_to_snowflake_task(**context) -> None:
                               f"(older than {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')})")
             task_logger.warning(f"This prevents re-inserting deleted historical data. "
                               f"Only processing {filtered_count} recent events (within last {MAX_EVENT_AGE_DAYS} day(s)).")
-            task_logger.warning(f"Current date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, "
-                              f"Cutoff: {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            current_date = datetime.now(timezone.utc) if cutoff_date.tzinfo else datetime.now()
+            task_logger.warning(f"Current date: {current_date}, Cutoff: {cutoff_date}")
         else:
             task_logger.info(f"All {filtered_count} events are recent (within last {MAX_EVENT_AGE_DAYS} day(s))")
     else:
         task_logger.warning("OCCURRED_AT column not found, cannot filter old events. "
                           "All events will be processed (this may cause old data to be re-inserted).")
+    
+    # Check if DataFrame is empty after filtering
+    if len(bene_df) == 0:
+        task_logger.warning("⚠️ No events to process after filtering. All events were either too old or invalid.")
+        task_logger.info("Skipping Snowflake load - no data to insert.")
+        return  # Exit early, no need to connect to Snowflake
     
     task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
     task_logger.info(f"Columns: {list(bene_df.columns)}")
@@ -294,7 +315,8 @@ def load_to_snowflake_task(**context) -> None:
         cursor.execute(put_sql)
         
         # Create temporary staging table for deduplication
-        staging_table = f"{SNOWFLAKE_TABLE}_STAGING_{int(datetime.now().timestamp())}"
+        # Use timezone-aware datetime for consistent timestamp generation
+        staging_table = f"{SNOWFLAKE_TABLE}_STAGING_{int(datetime.now(timezone.utc).timestamp())}"
         create_staging_sql = f"""
             CREATE TEMPORARY TABLE {staging_table} LIKE {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE};
         """
