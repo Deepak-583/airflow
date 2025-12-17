@@ -309,6 +309,17 @@ def load_to_snowflake_task(**context) -> None:
         task_logger.info(f"Creating stage: {SNOWFLAKE_STAGE}")
         cursor.execute(create_stage_sql)
         
+        # Clean up any existing files in the stage from previous runs
+        # This prevents leftover historical data from being re-inserted
+        cleanup_stage_sql = f"REMOVE @{SNOWFLAKE_STAGE};"
+        task_logger.info(f"Cleaning up stage: {SNOWFLAKE_STAGE} (removing any leftover files)")
+        try:
+            cursor.execute(cleanup_stage_sql)
+            task_logger.info("Stage cleaned successfully")
+        except Exception as e:
+            # Stage might be empty, which is fine
+            task_logger.debug(f"Stage cleanup note: {e}")
+        
         # Upload file to Snowflake stage
         put_sql = f"PUT file://{tmp_file_path} @{SNOWFLAKE_STAGE} OVERWRITE = TRUE;"
         task_logger.info(f"Uploading file to stage: {SNOWFLAKE_STAGE}")
@@ -338,11 +349,12 @@ def load_to_snowflake_task(**context) -> None:
         cursor.execute(copy_sql)
         
         # Merge staging data into target table with idempotency
-        # This ensures:
-        # 1. New events are inserted (WHEN NOT MATCHED)
-        # 2. Existing events are updated with latest data (WHEN MATCHED)
-        # 3. Deleted rows won't be re-inserted unless they're truly new events
-        # Deduplicate based on USER_ID, ENTITY_ID, and OCCURRED_AT combination
+        # CRITICAL FIX: Only insert records that are recent (within MAX_EVENT_AGE_DAYS)
+        # This prevents re-inserting old deleted records that are in the staging layer
+        # The WHERE clause in WHEN NOT MATCHED ensures only truly new, recent events are inserted
+        # Calculate cutoff timestamp - use DATEADD to work with Snowflake's timestamp types
+        cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=MAX_EVENT_AGE_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+        
         merge_sql = f"""
             MERGE INTO {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} AS target
             USING {staging_table} AS source
@@ -357,19 +369,31 @@ def load_to_snowflake_task(**context) -> None:
                     SESSION_ID = source.SESSION_ID,
                     PROPS = source.PROPS,
                     USERNAME = source.USERNAME
-            WHEN NOT MATCHED THEN
+            WHEN NOT MATCHED AND source.OCCURRED_AT >= DATEADD(day, -{MAX_EVENT_AGE_DAYS}, CURRENT_TIMESTAMP()) THEN
                 INSERT (USER_ID, EVENT_TYPE, DESCRIPTION, ENTITY_TYPE, ENTITY_ID, SESSION_ID, PROPS, OCCURRED_AT, USERNAME)
                 VALUES (source.USER_ID, source.EVENT_TYPE, source.DESCRIPTION, source.ENTITY_TYPE, 
                         source.ENTITY_ID, source.SESSION_ID, source.PROPS, source.OCCURRED_AT, source.USERNAME);
         """
         task_logger.info(f"Merging data into {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{SNOWFLAKE_TABLE} "
-                        f"(idempotent: updates existing, inserts new)")
+                        f"(idempotent: updates existing, inserts only recent events)")
+        task_logger.info(f"⚠️ CRITICAL: Only inserting events with OCCURRED_AT >= {cutoff_timestamp} "
+                        f"(within last {MAX_EVENT_AGE_DAYS} day(s)) to prevent re-inserting deleted old data")
         
         # Get count of rows in staging before merge for logging
         count_sql = f"SELECT COUNT(*) FROM {staging_table};"
         cursor.execute(count_sql)
         staging_count = cursor.fetchone()[0]
         task_logger.info(f"Staging table contains {staging_count} rows to merge")
+        
+        # Count how many rows in staging are recent enough to be inserted
+        recent_count_sql = f"SELECT COUNT(*) FROM {staging_table} WHERE OCCURRED_AT >= DATEADD(day, -{MAX_EVENT_AGE_DAYS}, CURRENT_TIMESTAMP());"
+        cursor.execute(recent_count_sql)
+        recent_count = cursor.fetchone()[0]
+        old_count = staging_count - recent_count
+        if old_count > 0:
+            task_logger.warning(f"⚠️ {old_count} rows in staging are too old (older than {cutoff_timestamp}) "
+                              f"and will NOT be inserted. This prevents re-inserting deleted historical data.")
+        task_logger.info(f"Only {recent_count} recent rows will be considered for insertion")
         
         # Execute merge
         cursor.execute(merge_sql)
@@ -379,7 +403,16 @@ def load_to_snowflake_task(**context) -> None:
         rows_affected = cursor.rowcount
         task_logger.info(f"Merge completed: {rows_affected} rows affected "
                         f"(combination of new inserts and existing row updates)")
-        task_logger.info("Idempotency ensured: deleted rows won't be re-inserted unless they're truly new events")
+        task_logger.info("✅ Idempotency ensured: Old deleted records will NOT be re-inserted due to date filter in MERGE")
+        
+        # Clean up staging table (temporary tables are auto-dropped, but explicit cleanup is good practice)
+        # Also clean up the stage to remove any leftover files
+        try:
+            cleanup_stage_sql = f"REMOVE @{SNOWFLAKE_STAGE};"
+            cursor.execute(cleanup_stage_sql)
+            task_logger.info("Cleaned up stage after merge (removed uploaded files)")
+        except Exception as e:
+            task_logger.debug(f"Stage cleanup note: {e}")
         
         # Commit transaction
         conn.commit()
