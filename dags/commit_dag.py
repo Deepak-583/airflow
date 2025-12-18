@@ -193,11 +193,30 @@ def load_to_snowflake_task(**context) -> None:
         bene_df['PROPS'] = '{}'
     
     # OCCURRED_AT - Map from timestamp column
-    # Use utc=True to ensure timezone-aware datetimes from the start (consistent with filtering logic)
+    # IMPORTANT: Preserve original timezone if present, otherwise assume UTC
+    # This prevents incorrect timezone conversions that change the actual event time
     if 'timestamp' in df.columns:
-        bene_df['OCCURRED_AT'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+        # First, try to parse with timezone awareness (preserves original timezone)
+        # If timestamp has timezone info (like 'Z' or '+05:30'), it will be preserved
+        # If it's naive (no timezone), we'll assume it's already in UTC
+        timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
+        # If timestamps are naive (no timezone), assume they're UTC
+        if timestamps.dt.tz is None:
+            timestamps = timestamps.dt.tz_localize('UTC')
+        else:
+            # Convert to UTC but preserve the original time value
+            # This ensures the actual event time is preserved, not shifted
+            timestamps = timestamps.dt.tz_convert('UTC')
+        bene_df['OCCURRED_AT'] = timestamps
+        task_logger.info(f"Parsed timestamps - sample: {timestamps.head(3).tolist()}")
     elif 'occurred_at' in df.columns:
-        bene_df['OCCURRED_AT'] = pd.to_datetime(df['occurred_at'], errors='coerce', utc=True)
+        timestamps = pd.to_datetime(df['occurred_at'], errors='coerce')
+        if timestamps.dt.tz is None:
+            timestamps = timestamps.dt.tz_localize('UTC')
+        else:
+            timestamps = timestamps.dt.tz_convert('UTC')
+        bene_df['OCCURRED_AT'] = timestamps
+        task_logger.info(f"Parsed timestamps - sample: {timestamps.head(3).tolist()}")
     else:
         task_logger.warning("timestamp/occurred_at column not found, setting to None")
         bene_df['OCCURRED_AT'] = None
@@ -289,6 +308,13 @@ def load_to_snowflake_task(**context) -> None:
     
     task_logger.info(f"Prepared DataFrame for BENE table: {len(bene_df)} rows, {len(bene_df.columns)} columns")
     task_logger.info(f"Columns: {list(bene_df.columns)}")
+    
+    # Sort by OCCURRED_AT to ensure chronological order (newest first for easier debugging)
+    # This helps with debugging and ensures consistent ordering
+    if 'OCCURRED_AT' in bene_df.columns:
+        bene_df = bene_df.sort_values('OCCURRED_AT', ascending=False)
+        task_logger.info(f"Sorted DataFrame by OCCURRED_AT (newest first)")
+        task_logger.info(f"Date range after sorting: {bene_df['OCCURRED_AT'].min()} to {bene_df['OCCURRED_AT'].max()}")
     
     # Connect to Snowflake
     task_logger.info(f"Connecting to Snowflake using connection: {SNOWFLAKE_CONN_ID}")
